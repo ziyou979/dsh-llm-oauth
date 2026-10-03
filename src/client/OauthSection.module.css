@@ -208,6 +208,22 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
+.codeInput {
+  flex: 1 1 16rem;
+  min-width: 10rem;
+  border-radius: 8px;
+  border: 1px solid var(--dsw-alias-border-l2, #d4d4d4);
+  background: var(--dsw-alias-bg-elevated, #fff);
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 8px;
+}
+
+.codeInput:disabled {
+  opacity: 0.55;
+}
+
 .buttonLink {
   display: inline-flex;
   align-items: center;

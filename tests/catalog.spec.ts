@@ -33,8 +33,11 @@ describe('oauth catalog', () => {
     expect(models.getModels('xai').map(model => model.id)).toContain('grok-4.6')
   })
 
-  it('refuses the OpenAI API-key catalog id', () => {
-    expect(() => resolveOAuthProviders(['openai'])).toThrow(/no OAuth method/)
+  it('offers Sign in with ChatGPT on the openai catalog id', () => {
+    // pi-ai >= 1.0.0 gives `openai` a real OAuth method (ChatGPT subscription).
+    const [provider] = resolveOAuthProviders(['openai'])
+    expect(provider?.id).toBe('openai')
+    expect(provider?.auth.oauth).toBeDefined()
   })
 
   it('includes GPT-6 from the upstream Codex catalog', () => {

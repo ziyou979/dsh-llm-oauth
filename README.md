@@ -21,7 +21,8 @@ Packaging follows the official plugin guides — [your first plugin](https://git
 |---|---|---|
 | Grok (SuperGrok / X Premium) | `xai` | Model ids come from the installed pi-ai catalog. |
 | GitHub Copilot | `github-copilot` | Optional Enterprise URL defaults to public `github.com`. |
-| ChatGPT / Codex plan | `openai-codex` | **Not** the `openai` API-key route. Needs device-code authorization enabled in ChatGPT — see below. **Account-ban risk.** |
+| ChatGPT plan (current) | `openai` | **Sign in with ChatGPT** — the ChatGPT subscription through pi-ai's official flow (needs `@earendil-works/pi-ai` ≥ 1.0.0). Do not also configure an `openai` API key on the first-party plugin: one route id takes one provider. |
+| ChatGPT / Codex plan (legacy) | `openai-codex` | Device-code flow for the GPT-5.x Codex models. Needs device-code authorization enabled in ChatGPT — see below. **Account-ban risk.** |
 | Anthropic subscription | `anthropic` | |
 | OpenRouter | `openrouter` | Large catalog — enable only if you need it. |
 | Kimi For Coding | `kimi-coding` | |
@@ -75,7 +76,9 @@ The Web UI adds a settings section (between **Models** and **Plugins**) with:
 - Successful sign-in stores tokens and auto-enables the provider
 - Device codes show on the page (with copy); authorization URLs open in a new tab, or via **Open authorization page** if the popup is blocked
 
-Providers that ask “pick a login method” (e.g. `openai-codex`) auto-select **device code** on Web (browser login needs a local `:1455` callback). If you still see an interactive-prompt error, use `bin/login.mjs` in a terminal.
+Providers that ask “pick a login method” (e.g. `openai-codex`) auto-select **device code** on Web.
+
+**Sign in with ChatGPT** (`openai`, pi-ai ≥ 1.0.0) starts pi-ai's callback server on the host at `127.0.0.1:1455`. If your browser runs on that machine the sign-in finishes by itself; when it cannot (remote Web UI, port busy) the Settings page shows a **paste box** for the final redirect URL — from chat, `/oauth code openai <redirect-url-or-code>` does the same.
 
 After a provider is enabled (and signed in), it also appears under Settings → **Models** next to API-key routes:
 
@@ -91,7 +94,14 @@ Host HTTP API (same-origin Web):
 | `POST` | `/dsh-llm-oauth/enable` | `{ "provider": "xai" }` |
 | `POST` | `/dsh-llm-oauth/disable` | `{ "provider": "xai" }` |
 | `POST` | `/dsh-llm-oauth/login` | `{ "provider": "xai" }` |
+| `POST` | `/dsh-llm-oauth/code` | `{ "provider": "openai", "code": "<redirect-url-or-code>" }` |
 | `POST` | `/dsh-llm-oauth/logout` | `{ "provider": "xai" }` |
+
+## ChatGPT: `openai` (current) vs `openai-codex` (legacy)
+
+`openai` is pi-ai's **Sign in with ChatGPT** flow: the browser ends on the host's `127.0.0.1:1455` callback and the host exchanges the code. Nothing else to switch on, and no device-code toggle needed. When the callback cannot reach the host, paste the final redirect URL back (Settings page box, or `/oauth code openai …`).
+
+One caveat: `openai` is also the first-party **API-key** route id. Configuring an `openai` API key under Settings → Models and enabling `openai` here would collide (`DUPLICATE_ADAPTER`), so this plugin refuses to enable a route another adapter already owns and tells you which id to remove.
 
 ## ChatGPT / Codex: enable device-code auth first
 

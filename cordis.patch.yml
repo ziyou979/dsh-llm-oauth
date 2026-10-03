@@ -14,10 +14,13 @@
       inject: [llm]
       config:
         # pi-ai catalog ids that declare OAuth / subscription login.
-        # openai (API key) is NOT OAuth — use openai-codex for ChatGPT/Codex.
+        # openai = "Sign in with ChatGPT" (pi-ai >= 1.0.0); openai-codex is the
+        # legacy Codex device-code flow. Do not also configure an `openai`
+        # API key on llm-pi-ai: one route id takes one adapter.
         catalog:
           - xai
           - github-copilot
+          - openai
           - openai-codex
           - anthropic
           - openrouter

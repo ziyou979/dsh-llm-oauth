@@ -11,6 +11,7 @@ import {
   fetchOauthStatus,
   loginOauthProvider,
   logoutOauthProvider,
+  submitOauthCode,
   type OAuthLoginCommand,
   type OAuthProviderStatus,
   type OAuthStatusSnapshot,
@@ -24,7 +25,7 @@ export interface OauthSectionInjected {
 
 export type OauthSectionProps = Partial<OauthSectionInjected>
 
-type BusyAction = 'enable' | 'disable' | 'login' | 'logout' | 'refresh'
+type BusyAction = 'enable' | 'disable' | 'login' | 'logout' | 'code' | 'refresh'
 
 /** Try to open the OAuth URL; returns false if the browser blocked the popup. */
 function tryOpenAuthWindow(url: string): boolean {
@@ -95,7 +96,7 @@ function Loaded({ t }: { t: (key: OauthSettingsKey) => string }): ReactNode {
   ): Promise<void> => {
     setBusy({ id: provider, action })
     setError(undefined)
-    if (action !== 'login') {
+    if (action !== 'login' && action !== 'code') {
       setCommand(undefined)
       setPopupBlocked(false)
     }
@@ -104,8 +105,9 @@ function Loaded({ t }: { t: (key: OauthSettingsKey) => string }): ReactNode {
       if (action === 'login') applyLoginResult(next)
       else {
         setStatus(next)
-        setCommand(undefined)
-        setPopupBlocked(false)
+        setCommand(next.command)
+        setError(next.command?.kind === 'error' ? next.command.text : undefined)
+        if (action !== 'code') setPopupBlocked(false)
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -203,6 +205,7 @@ function Loaded({ t }: { t: (key: OauthSettingsKey) => string }): ReactNode {
                 onDisable={() => { void run(row.id, 'disable', disableOauthProvider) }}
                 onLogin={() => { void run(row.id, 'login', loginOauthProvider) }}
                 onLogout={() => { void run(row.id, 'logout', logoutOauthProvider) }}
+                onSubmitCode={code => { void run(row.id, 'code', id => submitOauthCode(id, code)) }}
               />
             ))}
           </ul>
@@ -221,10 +224,19 @@ function ProviderRow(props: {
   onDisable: () => void
   onLogin: () => void
   onLogout: () => void
+  onSubmitCode: (code: string) => void
 }): ReactNode {
-  const { row, t, busy, onEnable, onDisable, onLogin, onLogout } = props
+  const { row, t, busy, onEnable, onDisable, onLogin, onLogout, onSubmitCode } = props
   const rowBusy = busy?.id === row.id
   const disabled = busy !== undefined
+  const [code, setCode] = useState('')
+
+  const submit = (): void => {
+    const value = code.trim()
+    if (value.length === 0) return
+    setCode('')
+    onSubmitCode(value)
+  }
 
   return (
     <li className={styles.rowCard}>
@@ -251,11 +263,39 @@ function ProviderRow(props: {
           {row.id === 'openrouter' && !row.enabled
             ? <p className={styles.notice}>{t('openrouterWarn')}</p>
             : null}
+          {row.id === 'openai'
+            ? <p className={styles.notice}>{t('openaiWarn')}</p>
+            : null}
           {row.loginDetail !== undefined && row.loginStatus === 'error'
             ? <p className={styles.error}>{row.loginDetail}</p>
             : null}
         </div>
       </div>
+      {row.loginPrompt !== undefined
+        ? (
+          <form
+            className={styles.codeBox}
+            onSubmit={(event) => { event.preventDefault(); submit() }}
+          >
+            <span className={styles.codeLabel}>{row.loginPrompt.message}</span>
+            <input
+              className={styles.codeInput}
+              type="text"
+              value={code}
+              disabled={disabled}
+              placeholder={row.loginPrompt.placeholder ?? t('pastePlaceholder')}
+              onChange={(event) => { setCode(event.target.value) }}
+            />
+            <button
+              type="submit"
+              className={styles.secondaryButton}
+              disabled={disabled || code.trim().length === 0}
+            >
+              {rowBusy && busy?.action === 'code' ? t('busy') : t('submitCode')}
+            </button>
+          </form>
+        )
+        : null}
       <div className={styles.rowActions}>
         {row.enabled
           ? (

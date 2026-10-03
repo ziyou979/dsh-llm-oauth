@@ -26,8 +26,11 @@ export const zh = {
   openAuth: '打开授权页',
   userCodeLabel: '设备码',
   copyCode: '复制设备码',
+  submitCode: '提交',
+  pastePlaceholder: '粘贴浏览器最终地址或授权码',
   popupBlocked: '浏览器拦截了弹窗，请点「打开授权页」或允许本站弹窗后重试登录。',
   openrouterWarn: 'OpenRouter catalog 很大；确认需要后再开启。',
+  openaiWarn: 'openai 走「Sign in with ChatGPT」。若已在设置 → 模型用 API Key 配过 openai，请先移除该配置：同一个路由只能由一个提供方注册。',
 } as const
 
 export type OauthSettingsKey = keyof typeof zh
@@ -58,6 +61,9 @@ export const en: Record<OauthSettingsKey, string> = {
   openAuth: 'Open authorization page',
   userCodeLabel: 'Device code',
   copyCode: 'Copy code',
+  submitCode: 'Submit',
+  pastePlaceholder: 'Paste the final redirect URL or code',
   popupBlocked: 'The browser blocked the popup. Click “Open authorization page” or allow popups for this site and try again.',
   openrouterWarn: 'OpenRouter’s catalog is large; enable only if you need it.',
+  openaiWarn: 'openai signs in with ChatGPT. If Settings → Models already configures an openai API key, remove that profile first — one route id can be registered by only one provider.',
 }

@@ -12,12 +12,13 @@ export const name = 'llm-oauth'
 
 /**
  * Services that must exist before the plugin is applied.
- * `settings` is optional at runtime (its section attaches through ctx.inject).
+ * `settings` is optional at runtime: the live policy attaches through ctx.inject,
+ * and `/oauth` / the HTTP API report their own error when it is absent.
  */
 export const inject = ['llm']
 
-export { Config, resolveConfig, enabledProviderIds } from './config.ts'
-export type { ResolvedConfig, OAuthProviderProfile } from './config.ts'
+export { Config, readConfig, resolveConfig, enabledProviderIds } from './config.ts'
+export type { ResolvedConfig, RuntimeConfig, OAuthProviderProfile } from './config.ts'
 export { apply } from './runtime.ts'
 export { OAuthPiAiAdapter } from './adapter.ts'
 export { FileCredentialStore } from './store.ts'

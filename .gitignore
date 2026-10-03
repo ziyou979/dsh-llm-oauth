@@ -4,3 +4,5 @@ node_modules/
 coverage/
 .pnpm-store/
 .DS_Store
+.idea/
+.zy/

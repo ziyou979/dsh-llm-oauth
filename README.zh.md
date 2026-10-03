@@ -21,7 +21,8 @@ DeepSeek Harness 的**独立 OAuth / 订阅套餐** LLM 插件。用 `dsh plugin
 |---|---|---|
 | Grok（SuperGrok / X Premium） | `xai` | 模型 id 来自已安装的 pi-ai catalog。 |
 | GitHub Copilot | `github-copilot` | 可选 Enterprise URL 默认留空，即公开的 `github.com`。 |
-| ChatGPT / Codex 订阅 | `openai-codex` | **不是** `openai` API Key。必须先在 ChatGPT 设置里打开设备码授权，见下文。**有封号风险。** |
+| ChatGPT 订阅（当前方式） | `openai` | **Sign in with ChatGPT**，走 pi-ai 的官方流程（需要 `@earendil-works/pi-ai` ≥ 1.0.0）。不要再在第一方插件里给 `openai` 配 API Key：同一个路由只能有一个提供方。 |
+| ChatGPT / Codex 订阅（legacy） | `openai-codex` | 设备码流程，用于 GPT-5.x Codex 模型。必须先在 ChatGPT 设置里打开设备码授权，见下文。**有封号风险。** |
 | Anthropic 订阅 | `anthropic` | |
 | OpenRouter | `openrouter` | catalog 很大，确认需要再开启。 |
 | Kimi For Coding | `kimi-coding` | |
@@ -79,7 +80,9 @@ Web 端在设置侧栏会多一页 **OAuth / 订阅**（在「模型」与「插
 - 登录成功会写入 token，并自动开启
 - 设备码显示在页面提示区（可复制）；授权链接会尽量新开标签，弹窗被拦时点 **打开授权页**
 
-`openai-codex` 等需要「选择登录方式」的提供方，Web 端会**自动选设备码**（浏览器回调要本机 `:1455` 端口，设置页用不了）。若仍提示 interactive prompt，再用终端 `bin/login.mjs`。
+`openai-codex` 等需要「选择登录方式」的提供方，Web 端会**自动选设备码**。
+
+**Sign in with ChatGPT**（`openai`，需要 pi-ai ≥ 1.0.0）会在 Host 侧起 pi-ai 的 `127.0.0.1:1455` 回调。浏览器和 Host 在同一台机器时会自动完成；无法回连时（远程 Web、端口被占），设置页会出现**粘贴框**，把浏览器最终地址贴回来即可；聊天里等价命令是 `/oauth code openai <redirect-url-or-code>`。
 
 提供方开启（并登录）后，也会出现在设置 → **模型**，与 API Key 路由并列：
 
@@ -95,7 +98,14 @@ Host 提供轻量 HTTP API（同机 Web 使用）：
 | `POST` | `/dsh-llm-oauth/enable` | `{ "provider": "xai" }` |
 | `POST` | `/dsh-llm-oauth/disable` | `{ "provider": "xai" }` |
 | `POST` | `/dsh-llm-oauth/login` | `{ "provider": "xai" }` |
+| `POST` | `/dsh-llm-oauth/code` | `{ "provider": "openai", "code": "<redirect-url-or-code>" }` |
 | `POST` | `/dsh-llm-oauth/logout` | `{ "provider": "xai" }` |
+
+## ChatGPT：`openai`（当前）与 `openai-codex`（legacy）
+
+`openai` 就是 pi-ai 的 **Sign in with ChatGPT**：浏览器最后落在 Host 的 `127.0.0.1:1455` 回调上，由 Host 换取 token，不需要额外开关，也不需要设备码授权。回连不到 Host 时，把最终重定向地址贴回来即可（设置页粘贴框，或 `/oauth code openai …`）。
+
+一个注意点：`openai` 同时是第一方 **API Key** 的路由 id。如果在设置 → 模型里配了 `openai` 的 API Key，再在这里开启 `openai` 会撞 `DUPLICATE_ADAPTER`；本插件会在开启前检测并明确报错，告诉你要移除哪一边。
 
 ## ChatGPT / Codex：先打开设备码授权
 

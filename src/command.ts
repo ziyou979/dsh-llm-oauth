@@ -18,6 +18,16 @@ export interface CommandResult {
   readonly userCode?: string
 }
 
+/** A prompt the background login waits on (pi-ai `manual_code`). */
+export interface LoginPrompt {
+  /** pi-ai prompt type, e.g. `manual_code`. */
+  readonly type: string
+  /** Prompt text shown to the person. */
+  readonly message: string
+  /** Placeholder / expected value shape (usually the redirect URI). */
+  readonly placeholder?: string
+}
+
 /** In-flight or last-finished login, keyed by provider id. */
 export interface LoginWatch {
   readonly provider: string
@@ -25,14 +35,42 @@ export interface LoginWatch {
   detail?: string
   openUrl?: string
   userCode?: string
+  /** Prompt awaiting a pasted value, when the login cannot continue alone. */
+  prompt?: LoginPrompt
   readonly lines: string[]
 }
 
 const watches = new Map<string, LoginWatch>()
+/** Resolvers for prompts awaiting a pasted value, keyed by provider id. */
+const pendingPrompts = new Map<string, (value: string) => void>()
 
 /** Test helper: drop every background login watch. */
 export function resetLoginWatches(): void {
   watches.clear()
+  pendingPrompts.clear()
+}
+
+/**
+ * Answer the prompt a background login is waiting on — the value pi-ai asks for
+ * when a browser callback cannot complete (Sign in with ChatGPT on a remote
+ * Web UI, or a busy :1455 callback port).
+ * @param provider - provider id whose login is waiting.
+ * @param value - pasted final redirect URL or authorization code.
+ * @returns whether a waiting prompt consumed the value.
+ */
+export function submitLoginCode(provider: string, value: string): boolean {
+  const resolve = pendingPrompts.get(provider)
+  if (resolve === undefined) return false
+  const trimmed = value.trim()
+  if (trimmed.length === 0) return false
+  pendingPrompts.delete(provider)
+  const watch = watches.get(provider)
+  if (watch !== undefined) {
+    delete watch.prompt
+    watch.lines.push('Submitted the pasted value; finishing the sign-in…')
+  }
+  resolve(trimmed)
+  return true
 }
 
 /** Snapshot of background login watches (for tests and `/oauth status`). */
@@ -48,6 +86,7 @@ function usageText(authPath: string): string {
     '  /oauth enable <provider>',
     '  /oauth disable <provider>',
     '  /oauth login <provider>',
+    '  /oauth code <provider> <redirect-url-or-code>',
     '  /oauth logout <provider>',
     '',
     `Auth file: ${authPath}`,
@@ -55,9 +94,11 @@ function usageText(authPath: string): string {
     'Notes:',
     '  - Only enabled providers appear in the model picker.',
     '  - login auto-enables the provider when settings are available.',
-    '  - openai (API) is not OAuth; use openai-codex for ChatGPT / Codex subscription.',
+    '  - GPT subscriptions: "openai" is Sign in with ChatGPT (pi-ai >= 1.0.0);',
+    '    "openai-codex" is the legacy device-code flow for the Codex models.',
     '  - Grok is provider id "xai".',
-    '  - Do not also configure the same provider id under llm-pi-ai (DUPLICATE_ADAPTER).',
+    '  - Do not also configure the same provider id under llm-pi-ai (DUPLICATE_ADAPTER):',
+    '    an id one adapter already owns is refused here with a clear error.',
     '  - Prefer Settings → OAuth / 订阅 for status + enable toggles.',
   ].join('\n')
 }
@@ -148,6 +189,13 @@ function waitingText(watch: LoginWatch): string {
     ...watch.lines,
     '',
     `Finish signing in to ${watch.provider} in the browser.`,
+    ...watch.prompt === undefined
+      ? []
+      : [
+        `If the browser callback cannot reach this machine, paste the value it asks for `
+        + `(${watch.prompt.message}) in Settings → OAuth / 订阅, or run:`,
+        `  /oauth code ${watch.provider} <redirect-url-or-code>`,
+      ],
     'This command has returned so the UI is not stuck; the login continues in the background.',
     'When you are done, run /oauth status or refresh Settings → OAuth / 订阅.',
   ].join('\n')
@@ -214,12 +262,20 @@ async function startLogin(
         )
         return optionalText
       }
-      throw new Error(
-        `Interactive prompt required (${prompt.type}: ${prompt.message}`
-        + `${prompt.placeholder ? ` / ${prompt.placeholder}` : ''}). `
-        + `This provider cannot finish from Settings / /oauth; run: `
-        + `node <profile>/node_modules/dsh-llm-oauth/bin/login.mjs ${provider}`,
+      // Nothing else can be answered without a person — pi-ai's ChatGPT sign-in
+      // asks for the final redirect URL when its :1455 callback cannot finish.
+      // Record the prompt and wait for the value the UI submits.
+      watch.prompt = {
+        type: prompt.type,
+        message: prompt.message,
+        ...prompt.placeholder === undefined ? {} : { placeholder: prompt.placeholder },
+      }
+      lines.push(
+        `${prompt.message}${prompt.placeholder === undefined ? '' : ` (${prompt.placeholder})`}`,
       )
+      return await new Promise<string>((resolve) => {
+        pendingPrompts.set(provider, resolve)
+      })
     },
     notify: (event: {
       type: string
@@ -251,7 +307,11 @@ async function startLogin(
       watch.detail = error instanceof Error ? error.message : String(error)
       release(error instanceof Error ? error : new Error(watch.detail))
     },
-  )
+  ).finally(() => {
+    // A prompt this login no longer waits on must not linger in the UI.
+    pendingPrompts.delete(provider)
+    delete watch.prompt
+  })
 
   try {
     await firstNotice
@@ -308,6 +368,29 @@ export async function handleOauthCommand(
     return { kind: 'success', text: rows.join('\n') }
   }
 
+  // Sign in with ChatGPT (and any other callback flow) may need the value the
+  // browser ended on when its :1455 callback cannot reach this machine.
+  if (action === 'code') {
+    if (target === undefined) {
+      return { kind: 'error', text: 'Usage: /oauth code <provider> <redirect-url-or-code>' }
+    }
+    const value = parts.slice(2).join(' ')
+    if (value.length === 0) {
+      return { kind: 'error', text: 'Usage: /oauth code <provider> <redirect-url-or-code>' }
+    }
+    if (!submitLoginCode(target, value)) {
+      return {
+        kind: 'error',
+        text: `${target} is not waiting for a pasted value. Start /oauth login ${target} first.`,
+      }
+    }
+    return {
+      kind: 'success',
+      text: `Submitted the value for ${target}; the sign-in continues in the background. `
+        + 'Run /oauth status or refresh Settings → OAuth / 订阅.',
+    }
+  }
+
   if (action === 'status') {
     const rows = [`Auth file: ${adapter.authPath()}`, '']
     for (const id of catalog) {
@@ -331,6 +414,7 @@ export async function handleOauthCommand(
     if (target === undefined) return { kind: 'error', text: 'Usage: /oauth logout <provider>' }
     try {
       watches.delete(target)
+      pendingPrompts.delete(target)
       await adapter.logout(target)
       return { kind: 'success', text: `Logged out ${target}.` }
     } catch (error) {

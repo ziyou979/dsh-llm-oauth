@@ -5,6 +5,15 @@
  * - `catalog` — OAuth-capable pi-ai ids this plugin may offer
  * - `providers` — enabled profiles (key present ⇒ route registered / models listed)
  *
+ * `providers` is declared `.volatile()`: schemastery parses it into a stable
+ * reference read with `.get()`, the Loader replaces that reference in place when
+ * a settings write commits (no remount), and only a Config declaring at least
+ * one volatile field may be edited live — without one the settings service
+ * answers every enable/disable with
+ * `Plugin entry "llm-oauth" has no volatile fields`. `catalog` and `authPath`
+ * stay ordinary: both are composition choices the adapter resolves once at
+ * mount.
+ *
  * Default `providers` is empty so installing the plugin does not dump every
  * catalog model into the picker. Enable via Settings → OAuth / 订阅, or by
  * writing a profile under `llm-oauth.providers.<id>`, or automatically on a
@@ -13,6 +22,7 @@
  * @module dsh-llm-oauth/config
  */
 
+import type { Volatile } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { DEFAULT_PROVIDERS } from './catalog.ts'
 
@@ -42,6 +52,17 @@ export interface Config {
   authPath?: string
 }
 
+/**
+ * Configuration as the Loader hands it to `apply()`. `providers` is the
+ * volatile field: keep the reference and read `.get()` on each operation, so a
+ * settings write is observed without remounting the plugin.
+ */
+export interface RuntimeConfig {
+  catalog: string[]
+  providers: Volatile<Record<string, OAuthProviderProfile> | string[]>
+  authPath?: string
+}
+
 /** Configuration after defaults. */
 export interface ResolvedConfig {
   catalog: string[]
@@ -57,16 +78,52 @@ const ProviderProfileSchema: z<OAuthProviderProfile> = z.object({
 /**
  * Loader-visible configuration schema.
  * Shared by composition entry config and the `llm-oauth` settings section.
+ *
+ * `providers` is volatile, so the settings service accepts live enable/disable
+ * edits to this entry and the Loader swaps the reference in place instead of
+ * remounting the plugin.
  */
-export const Config: z<Config> = z.object({
+export const Config = z.object({
   catalog: z.array(z.string()).default([...DEFAULT_PROVIDERS]),
   // Dict = enabled profiles. Array = legacy v0.1 “always register these ids”.
   providers: z.union([
     z.dict(ProviderProfileSchema),
     z.array(z.string()),
-  ]).default({}),
+  ]).default({}).volatile(),
   authPath: z.string(),
 })
+
+/**
+ * Read one configuration field's current value; an ordinary value passes
+ * through unchanged.
+ * @param value - a parsed field, plain or volatile.
+ * @returns the current snapshot for a volatile reference.
+ */
+function readField<T>(value: T | Volatile<T> | undefined): T | undefined {
+  if (value === undefined || value === null) return undefined
+  const box = value as Volatile<T>
+  // The snapshot is deeply readonly; readConfig detaches it below, and every
+  // other reader only inspects it.
+  return typeof box.get === 'function' ? box.get() as T : value as T
+}
+
+/**
+ * Project the Loader's configuration onto the plain shape composition input
+ * uses, so no caller holds a volatile reference between operations.
+ * @param config - Loader configuration (volatile fields) or plain values.
+ * @returns plain configuration, detached from the live references.
+ */
+export function readConfig(config: RuntimeConfig | Config = {}): Config {
+  const values = config as Partial<RuntimeConfig>
+  const catalog = readField(values.catalog)
+  const providers = readField(values.providers)
+  const authPath = readField(values.authPath)
+  return {
+    ...catalog === undefined ? {} : { catalog: structuredClone(catalog) },
+    ...providers === undefined ? {} : { providers: structuredClone(providers) },
+    ...authPath === undefined ? {} : { authPath },
+  }
+}
 
 /**
  * Normalize composition/settings input: legacy `providers: string[]` becomes

@@ -2,6 +2,13 @@
  * Browser client for the host `/dsh-llm-oauth` HTTP API.
  */
 
+/** Prompt a running login waits on; the pasted value goes back through `/code`. */
+export interface OAuthLoginPrompt {
+  type: string
+  message: string
+  placeholder?: string
+}
+
 export interface OAuthProviderStatus {
   id: string
   name: string
@@ -11,6 +18,8 @@ export interface OAuthProviderStatus {
   authSource?: string
   loginStatus?: 'waiting' | 'ok' | 'error'
   loginDetail?: string
+  /** Value the running login waits for (pi-ai `manual_code`). */
+  loginPrompt?: OAuthLoginPrompt
 }
 
 export interface OAuthLoginCommand {
@@ -98,5 +107,16 @@ export function logoutOauthProvider(provider: string): Promise<OAuthStatusSnapsh
   return request('/logout', {
     method: 'POST',
     body: JSON.stringify({ provider }),
+  })
+}
+
+/**
+ * Hand a running sign-in the value it waits for (the final redirect URL or
+ * authorization code a browser callback could not deliver to this host).
+ */
+export function submitOauthCode(provider: string, code: string): Promise<OAuthStatusSnapshot> {
+  return request('/code', {
+    method: 'POST',
+    body: JSON.stringify({ provider, code }),
   })
 }

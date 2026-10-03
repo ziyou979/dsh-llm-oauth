@@ -92,6 +92,26 @@ export async function handleOauthHttp(
       return
     }
 
+    if (method === 'POST' && path === `${API_PREFIX}/code`) {
+      const body = await readJson(req)
+      const provider = providerOf(body, url)
+      const value = typeof body.code === 'string' ? body.code
+        : typeof body.value === 'string' ? body.value : undefined
+      if (provider === undefined || value === undefined || value.trim().length === 0) {
+        sendJson(res, 400, { error: 'missing provider or code' })
+        return
+      }
+      controller.submitCode(provider, value)
+      sendJson(res, 200, {
+        ...await controller.status(),
+        command: {
+          kind: 'success',
+          text: `Submitted the value for ${provider}; the sign-in continues in the background.`,
+        },
+      })
+      return
+    }
+
     if (method === 'POST' && path === `${API_PREFIX}/logout`) {
       const body = await readJson(req)
       const provider = providerOf(body, url)

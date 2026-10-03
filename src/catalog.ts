@@ -9,6 +9,9 @@ import type { Provider } from '@earendil-works/pi-ai'
 export const DEFAULT_PROVIDERS = [
   'xai',
   'github-copilot',
+  // Sign in with ChatGPT (ChatGPT subscription); pi-ai >= 1.0.0.
+  'openai',
+  // Legacy Codex device-code flow, kept for the GPT-5.x Codex models.
   'openai-codex',
   'anthropic',
   'openrouter',
@@ -41,7 +44,9 @@ export function resolveOAuthProviders(requested: readonly string[]): Provider[] 
     if (provider.auth.oauth === undefined) {
       throw new Error(
         `dsh-llm-oauth: provider "${id}" has no OAuth method `
-        + '(openai is API-key only; use openai-codex for ChatGPT / Codex subscription OAuth, xai for Grok)',
+        + '(GPT subscriptions use "openai" — Sign in with ChatGPT — or the legacy "openai-codex"; '
+        + 'pure API-key ids such as "openai"-less gateways stay on the first-party plugin. '
+        + 'Run `node bin/login.mjs --list` for every OAuth-capable id)',
       )
     }
     resolved.push(provider)

@@ -17,11 +17,12 @@ import { OAuthPiAiAdapter } from './adapter.ts'
 import { SETTINGS_NS, catalogDisplayName, resolveOAuthProviders } from './catalog.ts'
 import { handleOauthCommand } from './command.ts'
 import {
-  Config,
   enabledProviderIds,
+  readConfig,
   resolveConfig,
   type OAuthProviderProfile,
   type ResolvedConfig,
+  type RuntimeConfig,
 } from './config.ts'
 import { defaultAuthPath } from './home.ts'
 import { OAUTH_HTTP_PREFIX, handleOauthHttp } from './http.ts'
@@ -35,9 +36,9 @@ const NS = SETTINGS_NS
  * @param ctx - scoped plugin context; registrations are effects.
  * @param config - configuration resolved by Cordis from the exported schema.
  */
-export function apply(ctx: Context, config: Config): void {
+export function apply(ctx: Context, config: RuntimeConfig): void {
   // resolveConfig also collapses legacy `providers: string[]` compositions.
-  const entry = resolveConfig(config)
+  const entry = resolveConfig(readConfig(config))
   resolveOAuthProviders(entry.catalog)
 
   const authPath = entry.authPath ?? defaultAuthPath()
@@ -48,13 +49,17 @@ export function apply(ctx: Context, config: Config): void {
     catalog: entry.catalog,
   })
 
-  let current: () => Config = () => entry
   let registration: AdapterRegistrationHandle | undefined
   let registeredRoutes: string[] = []
   let directory: DirectoryRegistrationHandle | undefined
   let directoryFacts: unknown
 
-  const snapshot = (): ResolvedConfig => resolveConfig(current())
+  /**
+   * The live configuration. `config.providers` is a volatile reference, so
+   * every operation reads the value the Loader committed last — a settings
+   * write reaches the adapter without a remount.
+   */
+  const snapshot = (): ResolvedConfig => resolveConfig(readConfig(config))
 
   const catalogIds = (): string[] => snapshot().catalog
 
@@ -131,32 +136,65 @@ export function apply(ctx: Context, config: Config): void {
     }
   }
 
-  const assertServiceable = (value: Config): void => {
-    const resolved = resolveConfig(value)
-    resolveOAuthProviders(resolved.catalog)
-    const allowed = new Set(resolved.catalog)
-    for (const id of Object.keys(resolved.providers)) {
+  /**
+   * Refuse a configuration that cannot be served: every enabled id must be a
+   * catalog id, and every catalog id must be an OAuth-capable pi-ai provider.
+   */
+  const assertServiceable = (value: ResolvedConfig): void => {
+    resolveOAuthProviders(value.catalog)
+    const allowed = new Set(value.catalog)
+    for (const id of Object.keys(value.providers)) {
       if (!allowed.has(id)) {
         throw new Error(
-          `dsh-llm-oauth: enabled provider "${id}" is not in catalog [${resolved.catalog.join(', ')}]`,
+          `dsh-llm-oauth: enabled provider "${id}" is not in catalog [${value.catalog.join(', ')}]`,
         )
       }
       resolveOAuthProviders([id])
     }
   }
 
-  // Settings section when the seam exists (web / headless with settings-file).
-  // The provider owns registration, watching, and fallback on detachment.
-  // Until it attaches, the composition entry drives enablement below.
+  /**
+   * One route id belongs to one adapter. `openai` (Sign in with ChatGPT) is also
+   * the first-party llm-pi-ai API-key route, so enabling it while such a profile
+   * exists must fail loudly here instead of letting DUPLICATE_ADAPTER leave the
+   * model picker empty.
+   */
+  const assertRouteFree = (provider: string): void => {
+    if (registeredRoutes.includes(provider)) return
+    const owners = ctx.llm.listProviders().map(info => info.id)
+    if (owners.includes(provider)) {
+      throw new Error(
+        `dsh-llm-oauth: provider route "${provider}" is already registered by another plugin `
+        + '(an llm-pi-ai API-key profile?). Remove that profile first, or keep the API key and '
+        + 'use a different id from this catalog.',
+      )
+    }
+  }
+
+  // Settings surface policy: `auto: false` keeps the generic auto-generated
+  // page out of Settings → Plugins. This plugin owns the OAuth / 订阅 page and
+  // the `/oauth` command instead, and its `providers` dict is not a form.
   ctx.inject(['settings'], (settingsCtx) => {
-    settingsCtx.settings.installSection(ctx, NS, Config, entry, {
-      validate: assertServiceable,
-      setSource: (source) => {
-        current = source
-      },
-      onChange: refresh,
-    })
+    settingsCtx.effect(() => settingsCtx.settings.configure({ auto: false }, ctx.fiber))
   })
+
+  // Validate each candidate before the Loader commits it, so an unusable
+  // catalog or enablement fails the settings write instead of half-applying.
+  // The candidate carries the composed values (a missing catalog falls back to
+  // the shipped default inside resolveConfig).
+  ctx.on('internal/config', function (
+    this: import('@deepseek-ai/cordis').Fiber, _raw: unknown, next: () => unknown,
+  ): unknown {
+    const raw: unknown = next()
+    if (this !== ctx.fiber) return raw
+    assertServiceable(resolveConfig(readConfig(raw as RuntimeConfig)))
+    return raw
+  })
+
+  // The Loader commits volatile values into the running references and
+  // announces the change; this is what makes a settings write visible to the
+  // model picker and the route list.
+  ctx.on('loader/volatile-update', () => { refresh() })
 
   // Composition-only path before settings attach (and when settings never mounts).
   refresh()
@@ -175,9 +213,18 @@ export function apply(ctx: Context, config: Config): void {
           'dsh-llm-oauth: settings service is unavailable; add the provider under llm-oauth.providers in settings.yaml',
         )
       }
+      // Refuse an unknown or non-OAuth id here: the Loader refuses the same
+      // candidate, but the person clicking 开启 deserves the catalog error.
+      assertServiceable({
+        ...snapshot(),
+        providers: { ...snapshot().providers, [provider]: {} },
+      })
+      // …and refuse a route another plugin already owns (openai API key).
+      assertRouteFree(provider)
       await settings.mutate(NS, [
         { op: 'set', path: ['providers', provider], value: {} },
       ])
+      refresh()
     },
     disable: async (provider) => {
       const settings = ctx.get('settings') as {
@@ -194,6 +241,7 @@ export function apply(ctx: Context, config: Config): void {
       await settings.mutate(NS, [
         { op: 'unset', path: ['providers', provider] },
       ])
+      refresh()
     },
   })
 

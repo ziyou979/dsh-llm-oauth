@@ -8,8 +8,8 @@
 
 import type { OAuthPiAiAdapter } from './adapter.ts'
 import { catalogDisplayName } from './catalog.ts'
-import type { LoginWatch } from './command.ts'
-import { listLoginWatches } from './command.ts'
+import type { LoginPrompt, LoginWatch } from './command.ts'
+import { listLoginWatches, submitLoginCode } from './command.ts'
 
 /** One provider row for status UIs. */
 export interface OAuthProviderStatus {
@@ -29,6 +29,8 @@ export interface OAuthProviderStatus {
   loginStatus?: 'waiting' | 'ok' | 'error'
   /** Detail from the last login watch. */
   loginDetail?: string
+  /** Value the running login waits for (paste it back through the UI). */
+  loginPrompt?: LoginPrompt
 }
 
 /** Full status payload. */
@@ -123,6 +125,22 @@ export class OAuthController {
     await this.adapter.logout(provider)
   }
 
+  /**
+   * Answer the value a running login waits for (pi-ai `manual_code`: the final
+   * redirect URL / authorization code a callback flow could not deliver).
+   * @param provider - catalog id.
+   * @param value - pasted redirect URL or code.
+   * @throws when no login of that provider is waiting for a value.
+   */
+  submitCode(provider: string, value: string): void {
+    this.requireCatalog(provider)
+    if (!submitLoginCode(provider, value)) {
+      throw new Error(
+        `dsh-llm-oauth: ${provider} is not waiting for a pasted value; start the sign-in first`,
+      )
+    }
+  }
+
   /** Underlying adapter (login helper / commands). */
   getAdapter(): OAuthPiAiAdapter {
     return this.adapter
@@ -158,6 +176,7 @@ function statusRow(
       : {
         loginStatus: watch.status,
         ...watch.detail === undefined ? {} : { loginDetail: watch.detail },
+        ...watch.prompt === undefined ? {} : { loginPrompt: watch.prompt },
       },
   }
 }
