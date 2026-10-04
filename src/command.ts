@@ -41,13 +41,34 @@ export interface LoginWatch {
 }
 
 const watches = new Map<string, LoginWatch>()
+interface LoginSession {
+  watch: LoginWatch
+  abort: AbortController
+  finished?: Promise<void>
+}
+interface PendingPrompt {
+  watch: LoginWatch
+  resolve(value: string): void
+}
+const sessions = new Map<string, LoginSession>()
 /** Resolvers for prompts awaiting a pasted value, keyed by provider id. */
-const pendingPrompts = new Map<string, (value: string) => void>()
+const pendingPrompts = new Map<string, PendingPrompt>()
 
 /** Test helper: drop every background login watch. */
 export function resetLoginWatches(): void {
+  for (const session of sessions.values()) session.abort.abort(new Error('OAuth login cancelled'))
+  sessions.clear()
   watches.clear()
   pendingPrompts.clear()
+}
+
+/** Stop a provider's background login before removing its credentials. */
+export async function cancelLogin(provider: string): Promise<void> {
+  const session = sessions.get(provider)
+  const watch = watches.get(provider)
+  session?.abort.abort(new Error('OAuth login cancelled'))
+  await session?.finished
+  if (watches.get(provider) === watch) watches.delete(provider)
 }
 
 /**
@@ -59,8 +80,8 @@ export function resetLoginWatches(): void {
  * @returns whether a waiting prompt consumed the value.
  */
 export function submitLoginCode(provider: string, value: string): boolean {
-  const resolve = pendingPrompts.get(provider)
-  if (resolve === undefined) return false
+  const pending = pendingPrompts.get(provider)
+  if (pending === undefined) return false
   const trimmed = value.trim()
   if (trimmed.length === 0) return false
   pendingPrompts.delete(provider)
@@ -69,7 +90,7 @@ export function submitLoginCode(provider: string, value: string): boolean {
     delete watch.prompt
     watch.lines.push('Submitted the pasted value; finishing the sign-in…')
   }
-  resolve(trimmed)
+  pending.resolve(trimmed)
   return true
 }
 
@@ -211,6 +232,7 @@ async function startLogin(
   provider: string,
   signal?: AbortSignal,
 ): Promise<CommandResult> {
+  if (signal?.aborted) return { kind: 'error', text: 'oauth login cancelled before the provider returned a URL' }
   const existing = watches.get(provider)
   if (existing?.status === 'waiting') {
     return { kind: 'success', text: waitingText(existing), ...resultExtras(existing) }
@@ -219,6 +241,8 @@ async function startLogin(
   const lines: string[] = []
   const watch: LoginWatch = { provider, status: 'waiting', lines }
   watches.set(provider, watch)
+  const session: LoginSession = { watch, abort: new AbortController() }
+  sessions.set(provider, session)
 
   let released = false
   let release!: (error?: Error) => void
@@ -232,17 +256,24 @@ async function startLogin(
   })
 
   const onAbort = (): void => {
-    release(new Error('oauth login cancelled before the provider returned a URL'))
+    const error = new Error('oauth login cancelled before the provider returned a URL')
+    session.abort.abort(error)
+    release(error)
   }
   signal?.addEventListener('abort', onAbort, { once: true })
 
   const interaction = {
+    signal: session.abort.signal,
     prompt: async (prompt: {
       type: string
       message: string
       placeholder?: string
       options?: readonly { id: string, label: string, description?: string }[]
+      signal?: AbortSignal
     }): Promise<string> => {
+      const promptSignal = prompt.signal === undefined ? session.abort.signal
+        : AbortSignal.any([session.abort.signal, prompt.signal])
+      promptSignal.throwIfAborted()
       // Web / slash-command has no stdin. Auto-pick select menus so providers
       // like openai-codex (browser vs device code) can continue to a URL/code.
       if (prompt.type === 'select' && prompt.options !== undefined && prompt.options.length > 0) {
@@ -273,8 +304,22 @@ async function startLogin(
       lines.push(
         `${prompt.message}${prompt.placeholder === undefined ? '' : ` (${prompt.placeholder})`}`,
       )
-      return await new Promise<string>((resolve) => {
-        pendingPrompts.set(provider, resolve)
+      return await new Promise<string>((resolve, reject) => {
+        const cleanup = (): void => {
+          promptSignal.removeEventListener('abort', onPromptAbort)
+          if (pendingPrompts.get(provider) === pending) {
+            pendingPrompts.delete(provider)
+            delete watch.prompt
+          }
+        }
+        const onPromptAbort = (): void => { cleanup(); reject(promptSignal.reason) }
+        const pending: PendingPrompt = {
+          watch,
+          resolve: (value) => { cleanup(); resolve(value) },
+        }
+        pendingPrompts.set(provider, pending)
+        promptSignal.addEventListener('abort', onPromptAbort, { once: true })
+        release()
       })
     },
     notify: (event: {
@@ -297,10 +342,11 @@ async function startLogin(
     },
   }
 
-  const finished = adapter.login(provider, interaction).then(
+  const finished = Promise.resolve().then(() => adapter.login(provider, interaction)).then(
     () => {
       watch.status = 'ok'
       watch.detail = `Logged in to ${provider}. Tokens stored in ${adapter.authPath()}.`
+      release()
     },
     (error: unknown) => {
       watch.status = 'error'
@@ -309,9 +355,11 @@ async function startLogin(
     },
   ).finally(() => {
     // A prompt this login no longer waits on must not linger in the UI.
-    pendingPrompts.delete(provider)
+    if (pendingPrompts.get(provider)?.watch === watch) pendingPrompts.delete(provider)
     delete watch.prompt
+    if (sessions.get(provider) === session) sessions.delete(provider)
   })
+  session.finished = finished
 
   try {
     await firstNotice
@@ -413,8 +461,7 @@ export async function handleOauthCommand(
   if (action === 'logout') {
     if (target === undefined) return { kind: 'error', text: 'Usage: /oauth logout <provider>' }
     try {
-      watches.delete(target)
-      pendingPrompts.delete(target)
+      await cancelLogin(target)
       await adapter.logout(target)
       return { kind: 'success', text: `Logged out ${target}.` }
     } catch (error) {

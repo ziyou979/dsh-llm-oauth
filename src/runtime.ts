@@ -150,6 +150,7 @@ export function apply(ctx: Context, config: RuntimeConfig): void {
         )
       }
       resolveOAuthProviders([id])
+      assertRouteFree(id)
     }
   }
 
@@ -170,6 +171,9 @@ export function apply(ctx: Context, config: RuntimeConfig): void {
       )
     }
   }
+
+  // The initial resolution happens before this plugin installs its config hook.
+  assertServiceable(entry)
 
   // Settings surface policy: `auto: false` keeps the generic auto-generated
   // page out of Settings → Plugins. This plugin owns the OAuth / 订阅 page and
@@ -219,8 +223,6 @@ export function apply(ctx: Context, config: RuntimeConfig): void {
         ...snapshot(),
         providers: { ...snapshot().providers, [provider]: {} },
       })
-      // …and refuse a route another plugin already owns (openai API key).
-      assertRouteFree(provider)
       await settings.mutate(NS, [
         { op: 'set', path: ['providers', provider], value: {} },
       ])

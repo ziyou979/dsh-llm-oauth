@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
+import { resolveConfig as parseConfig } from '@deepseek-ai/cordis'
+import { createRequire } from 'node:module'
 import { LlmRuntime } from '@deepseek-ai/dsh-llm'
 import * as plugin from '../src/index.ts'
 
@@ -21,12 +23,6 @@ function routes(ctx: Context) {
   return ctx.llm.listProviders().map(provider => provider.id).sort()
 }
 
-// The Harness settings service was reworked into `SettingsForms` (a Service
-// driven by `configEditor` + `profileContext`, with no `load`/`persist` seam
-// for a test double to override), so this file can no longer exercise live
-// settings writes the way it did against the old `SettingsProvider`. The
-// composition-driven paths below need no service; the volatile-config path is
-// covered by the Harness' own tests.
 describe('composition registration', () => {
   it('registers no routes on a dormant install', async () => {
     const { ctx } = await boot()
@@ -42,9 +38,8 @@ describe('composition registration', () => {
     const ctx = new Context()
     contexts.push(ctx)
     await ctx.plugin(LlmRuntime)
-    // Cordis reports a failed plugin start through the fiber state, not a throw.
-    const consumer = await ctx.plugin(plugin, { providers: { 'not-a-provider': {} } })
-    expect(consumer?.state).not.toBe(1) // not active
+    await expect(ctx.plugin(plugin, { providers: { 'not-a-provider': {} } }))
+      .rejects.toThrow(/not in catalog/)
     expect(routes(ctx)).toEqual([])
   })
 
@@ -53,5 +48,46 @@ describe('composition registration', () => {
     expect(routes(ctx)).toEqual(['anthropic', 'xai'])
     await consumer.dispose()
     expect(routes(ctx)).toEqual([])
+  })
+})
+
+describe('Loader live configuration', () => {
+  async function live() {
+    const require = createRequire(import.meta.url)
+    const peers = createRequire(require.resolve('@deepseek-ai/dsh-settings/package.json'))
+    const Loader = (await import(peers.resolve('@deepseek-ai/cordis-plugin-loader'))).default
+    const ctx = new Context()
+    contexts.push(ctx)
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(Loader)
+    ctx.loader.builtins.oauth = plugin
+    const id = await ctx.loader.create({ id: 'llm-oauth', name: 'cordis:oauth', config: { providers: { xai: {} } } })
+    const entry = ctx.loader.resolve(id)
+    await entry.fiber!.await()
+    return { ctx, entry }
+  }
+
+  it('updates provider routes without remounting the running plugin', async () => {
+    const { ctx, entry } = await live()
+    const fiber = entry.fiber!
+    await entry.update({ config: { providers: { anthropic: {} } } })
+    await entry.fiber!.await()
+    expect(entry.fiber === fiber).toBe(true)
+    expect(routes(ctx)).toEqual(['anthropic'])
+  })
+
+  it('refuses a foreign route before configEditor can commit the candidate', async () => {
+    const { ctx, entry } = await live()
+    const foreign = new plugin.OAuthPiAiAdapter({ authPath: 'unused', store: new plugin.FileCredentialStore('unused'), catalog: ['openai'] })
+    ctx.llm.registerAdapter(['openai'], foreign)
+    const fiber = entry.fiber!
+    const next = { providers: { xai: {}, openai: {}, anthropic: {} } }
+    expect(() => parseConfig(fiber.runtime!, fiber.ctx.waterfall(fiber, 'internal/config', next, () => next)))
+      .toThrow(/already registered by another plugin/)
+    // Loader also keeps its running volatile references when a raw reload is invalid.
+    await entry.update({ config: next })
+    await entry.fiber!.await()
+    expect(Object.keys(plugin.readConfig(fiber.config).providers!)).toEqual(['xai'])
+    expect(routes(ctx)).toEqual(['openai', 'xai'])
   })
 })

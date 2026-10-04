@@ -14,6 +14,7 @@ import { homedir } from 'node:os'
 import { createInterface } from 'node:readline'
 import { createModels } from '@earendil-works/pi-ai'
 import { builtinProviders } from '@earendil-works/pi-ai/providers/all'
+import { getDeviceId } from './device-id.mjs'
 
 function resolveDshHome(env = process.env) {
   const fromEnv = env.DSH_HOME
@@ -132,7 +133,7 @@ OAuth-capable catalog providers:
 ${oauthIds}
 
 Notes:
-  openai (API key) is not OAuth — use openai-codex for ChatGPT / Codex.
+  openai signs in with ChatGPT; openai-codex is the legacy Codex login.
   Grok is provider id "xai".
 
 Auth file: ${defaultAuthPath()}
@@ -152,11 +153,12 @@ Auth file: ${defaultAuthPath()}
   if (provider === undefined) {
     throw new Error(
       `Unknown or non-OAuth provider "${providerId}". Run --list. `
-      + '(openai is API-key only; use openai-codex / xai / github-copilot.)',
+      + '(GPT subscriptions use openai or openai-codex; Grok uses xai.)',
     )
   }
 
   const store = new FileCredentialStore(defaultAuthPath())
+  const deviceId = providerId === 'openai' ? await getDeviceId(store.path) : undefined
   const models = createModels({ credentials: store })
   models.setProvider(provider)
 
@@ -180,7 +182,7 @@ Auth file: ${defaultAuthPath()}
             break
         }
       },
-    })
+    }, deviceId === undefined ? undefined : { getDeviceId: () => deviceId })
     console.log(`\nCredentials saved to ${store.path}`)
   } finally {
     rl.close()

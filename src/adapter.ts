@@ -37,6 +37,7 @@ import type {
 import { resolveOAuthProviders } from './catalog.ts'
 import { toPiContext } from './context.ts'
 import { toStreamChunks } from './stream.ts'
+import { getDeviceId } from '../bin/device-id.mjs'
 
 export interface OAuthAdapterOptions {
   /** Absolute path of the durable auth file (diagnostics). */
@@ -135,9 +136,11 @@ export class OAuthPiAiAdapter extends LlmAdapter {
    * @param provider - catalog provider id.
    * @param interaction - prompt/notify callbacks.
    */
-  login(provider: string, interaction: AuthInteraction): Promise<Credential> {
+  async login(provider: string, interaction: AuthInteraction): Promise<Credential> {
     this.requireProvider(provider)
-    return this.models.login(provider, 'oauth', interaction)
+    const deviceId = provider === 'openai' ? await getDeviceId(this.options.authPath) : undefined
+    return this.models.login(provider, 'oauth', interaction,
+      deviceId === undefined ? undefined : { getDeviceId: () => deviceId })
   }
 
   /** Drop the stored credential for one provider. */

@@ -1,5 +1,6 @@
-import { describe, expect, it, beforeEach } from 'vitest'
-import { handleOauthCommand, listLoginWatches, resetLoginWatches } from '../src/command.ts'
+import { describe, expect, it, beforeEach, vi } from 'vitest'
+import { handleOauthCommand, listLoginWatches, resetLoginWatches, submitLoginCode } from '../src/command.ts'
+import { OAuthController } from '../src/service.ts'
 import type { OAuthPiAiAdapter } from '../src/adapter.ts'
 
 function fakeAdapter(login: OAuthPiAiAdapter['login']): OAuthPiAiAdapter {
@@ -41,8 +42,7 @@ describe('/oauth login', () => {
     expect(listLoginWatches()).toMatchObject([{ provider: 'xai', status: 'waiting' }])
     finish({ type: 'oauth' })
     await hung
-    await Promise.resolve()
-    expect(listLoginWatches()[0]?.status).toBe('ok')
+    await vi.waitFor(() => expect(listLoginWatches()[0]?.status).toBe('ok'))
   })
 
   it('fails immediately when the provider never issues a URL', async () => {
@@ -136,5 +136,73 @@ describe('/oauth login', () => {
     expect(result.kind).toBe('success')
     expect(result.openUrl).toBe('https://github.com/login/device')
     expect(result.userCode).toBe('GH-1234')
+  })
+
+  it('accepts a manual redirect and finishes the background login', async () => {
+    let pasted: string | undefined
+    const adapter = fakeAdapter(async (_provider, interaction) => {
+      interaction.notify({ type: 'auth_url', url: 'https://example.com/auth' })
+      pasted = await interaction.prompt({ type: 'manual_code', message: 'Paste redirect' })
+      return { type: 'oauth', access: 'test', refresh: 'test', expires: 0 }
+    })
+    const result = await handleOauthCommand(adapter, 'login xai')
+    expect(result.openUrl).toBe('https://example.com/auth')
+    expect(listLoginWatches()[0]?.prompt?.type).toBe('manual_code')
+    expect(submitLoginCode('xai', '  http://localhost/callback?code=test  ')).toBe(true)
+    await vi.waitFor(() => expect(listLoginWatches()[0]?.status).toBe('ok'))
+    expect(pasted).toBe('http://localhost/callback?code=test')
+    expect(listLoginWatches()[0]?.prompt).toBeUndefined()
+  })
+
+  it.each(['command', 'controller'])('cancels pending login before %s logout and allows a fresh prompt', async (path) => {
+    let oldCallback!: () => void
+    let oldSignal: AbortSignal | undefined
+    let oldManual!: Promise<string>
+    let attempts = 0
+    const adapter = fakeAdapter(async (_provider, interaction) => {
+      const attempt = ++attempts
+      interaction.notify({ type: 'auth_url', url: 'https://example.com/auth' })
+      const manual = interaction.prompt({ type: 'manual_code', message: 'Paste redirect' })
+      if (attempt === 1) {
+        oldSignal = interaction.signal
+        oldManual = manual
+        await Promise.race([manual, new Promise<void>(resolve => { oldCallback = resolve })])
+      } else await manual
+      return { type: 'oauth', access: 'test', refresh: 'test', expires: 0 }
+    })
+    const logout = vi.spyOn(adapter, 'logout').mockImplementation(async () => {
+      expect(oldSignal?.aborted).toBe(true)
+      expect(submitLoginCode('xai', 'stale')).toBe(false)
+    })
+    await handleOauthCommand(adapter, 'login xai')
+    if (path === 'command') await handleOauthCommand(adapter, 'logout xai')
+    else await new OAuthController(adapter, {
+      listEnabled: () => [], enable: async () => {}, disable: async () => {},
+    }).logout('xai')
+    expect(logout).toHaveBeenCalledOnce()
+    await expect(oldManual).rejects.toThrow(/cancelled/)
+    await handleOauthCommand(adapter, 'login xai')
+    oldCallback()
+    await Promise.resolve()
+    expect(submitLoginCode('xai', 'new redirect')).toBe(true)
+    await vi.waitFor(() => expect(listLoginWatches()[0]?.status).toBe('ok'))
+  })
+
+  it('withdraws the manual prompt when pi-ai cancels it after a browser callback', async () => {
+    const promptAbort = new AbortController()
+    let finish!: () => void
+    const adapter = fakeAdapter(async (_provider, interaction) => {
+      interaction.notify({ type: 'auth_url', url: 'https://example.com/auth' })
+      const manual = interaction.prompt({ type: 'manual_code', message: 'Paste redirect', signal: promptAbort.signal })
+      void manual.catch(() => undefined)
+      await new Promise<void>(resolve => { finish = resolve })
+      return { type: 'oauth', access: 'test', refresh: 'test', expires: 0 }
+    })
+    await handleOauthCommand(adapter, 'login xai')
+    promptAbort.abort()
+    expect(listLoginWatches()[0]?.prompt).toBeUndefined()
+    expect(submitLoginCode('xai', 'stale redirect')).toBe(false)
+    finish()
+    await vi.waitFor(() => expect(listLoginWatches()[0]?.status).toBe('ok'))
   })
 })

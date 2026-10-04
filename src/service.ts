@@ -9,7 +9,7 @@
 import type { OAuthPiAiAdapter } from './adapter.ts'
 import { catalogDisplayName } from './catalog.ts'
 import type { LoginPrompt, LoginWatch } from './command.ts'
-import { listLoginWatches, submitLoginCode } from './command.ts'
+import { cancelLogin, listLoginWatches, submitLoginCode } from './command.ts'
 
 /** One provider row for status UIs. */
 export interface OAuthProviderStatus {
@@ -122,6 +122,7 @@ export class OAuthController {
    */
   async logout(provider: string): Promise<void> {
     this.requireCatalog(provider)
+    await cancelLogin(provider)
     await this.adapter.logout(provider)
   }
 
