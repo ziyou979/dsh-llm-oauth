@@ -1,13 +1,15 @@
 /**
- * Minimal harness → pi-ai context conversion (text + tools).
- * Image content is refused; use first-party dsh-llm-pi-ai for vision.
+ * Minimal harness → pi-ai context conversion (text, images, tools).
+ * Image blocks are durable attachment references; the adapter reads their
+ * request bytes through the host attachment service before conversion.
  */
 
 import { contentHasImage, LlmError } from '@deepseek-ai/dsh-llm'
-import type { ContentBlock, GenerateOptions, Message } from '@deepseek-ai/dsh-llm'
+import type { ContentBlock, GenerateOptions, Message, RequestMessage } from '@deepseek-ai/dsh-llm'
 import type {
   AssistantMessage,
   Context as PiContext,
+  ImageContent,
   JsonObject,
   Message as PiMessage,
   TextContent,
@@ -15,6 +17,96 @@ import type {
   Tool as PiTool,
   ToolCall,
 } from '@earendil-works/pi-ai'
+
+/** Durable image reference fields this plugin reads (subset of dsh-attachment's ImageAttachmentRef). */
+export interface ImageRef {
+  attachmentId: string
+  mediaType: string
+  width: number
+  height: number
+}
+
+/** Request-ready image bytes (subset of dsh-attachment's RequestImageAttachment). */
+export interface RequestImage {
+  data: Uint8Array
+  mediaType: string
+}
+
+/** Structural view of the host `attachments` service used for image requests. */
+export interface ImageRequestReader {
+  readImageRequest(
+    ref: never,
+    target: { width: number, height: number, maxBytes: number },
+    signal?: AbortSignal,
+  ): Promise<RequestImage>
+}
+
+/** Request images keyed by attachment id. */
+export type RequestImages = ReadonlyMap<string, RequestImage>
+
+/** Same defaults as first-party dsh-llm-pi-ai: 2048×2048 pixel budget, 1 MiB encoded. */
+const IMAGE_MAX_PIXELS = 4_194_304
+const IMAGE_MAX_BYTES = 1_048_576
+
+function imageTarget(ref: ImageRef): { width: number, height: number, maxBytes: number } {
+  const scale = Math.min(1, Math.sqrt(IMAGE_MAX_PIXELS / (ref.width * ref.height)))
+  return {
+    width: Math.max(1, Math.floor(ref.width * scale)),
+    height: Math.max(1, Math.floor(ref.height * scale)),
+    maxBytes: IMAGE_MAX_BYTES,
+  }
+}
+
+/**
+ * Read request bytes for every non-offloaded image in the request.
+ * @param messages - request messages.
+ * @param attachments - host attachment service.
+ * @param signal - request abort signal.
+ */
+export async function prepareRequestImages(
+  messages: readonly RequestMessage[],
+  attachments: ImageRequestReader,
+  signal?: AbortSignal,
+): Promise<RequestImages> {
+  const refs = new Map<string, ImageRef>()
+  for (const message of messages) {
+    for (const block of message.content) {
+      if (block.type === 'image' && block.offloaded !== true) {
+        const ref = block.attachment as unknown as ImageRef
+        refs.set(String(ref.attachmentId), ref)
+      }
+    }
+  }
+  const images = new Map<string, RequestImage>()
+  for (const [id, ref] of refs) {
+    images.set(id, await attachments.readImageRequest(ref as never, imageTarget(ref), signal))
+  }
+  return images
+}
+
+function imageName(ref: ImageRef & { name?: string }): string {
+  return ref.name ?? String(ref.attachmentId)
+}
+
+/** User content: plain string when text-only, else text + image parts. */
+function userContent(message: Message, images: RequestImages | undefined): string | Array<TextContent | ImageContent> {
+  if (!contentHasImage(message.content)) return flattenText(message)
+  const content: Array<TextContent | ImageContent> = []
+  for (const block of message.content) {
+    if (block.type === 'text') {
+      if (block.text.length > 0) content.push({ type: 'text', text: block.text })
+    } else if (block.type === 'image') {
+      const ref = block.attachment as unknown as ImageRef & { name?: string }
+      const image = block.offloaded === true ? undefined : images?.get(String(ref.attachmentId))
+      if (image === undefined) {
+        content.push({ type: 'text', text: `[image omitted: ${imageName(ref)}]` })
+      } else {
+        content.push({ type: 'image', data: Buffer.from(image.data).toString('base64'), mimeType: image.mediaType })
+      }
+    }
+  }
+  return content
+}
 
 function flattenText(message: Message): string {
   return message.content
@@ -91,13 +183,16 @@ function toAssistant(message: Message): AssistantMessage {
 /**
  * Convert one assembled harness request into pi-ai's context envelope.
  * @param options - fully assembled model request.
+ * @param images - request image bytes keyed by attachment id (required when images are present).
  */
-export function toPiContext(options: GenerateOptions): PiContext {
-  if (options.messages.some(message => contentHasImage(message.content))) {
-    throw new LlmError(
-      'dsh-llm-oauth does not support image content; use dsh-llm-pi-ai for vision models',
-      'UNSUPPORTED_CONTENT',
-    )
+export function toPiContext(options: GenerateOptions, images?: RequestImages): PiContext {
+  for (const message of options.messages) {
+    if ((message.role === 'assistant' || message.role === 'system') && contentHasImage(message.content)) {
+      throw new LlmError(`dsh-llm-oauth cannot send an image in a ${message.role} message`, 'UNSUPPORTED_CONTENT')
+    }
+    if (images === undefined && message.content.some(b => b.type === 'image' && b.offloaded !== true)) {
+      throw new LlmError('dsh-llm-oauth image content requires prepared request images', 'UNSUPPORTED_CONTENT')
+    }
   }
 
   const toolNames = new Map<string, string>()
@@ -121,10 +216,10 @@ export function toPiContext(options: GenerateOptions): PiContext {
       continue
     }
 
-    const text = flattenText(message)
+    const content = userContent(message, images)
     const results = message.content.filter(block => block.type === 'tool-result')
-    if (text.length > 0 || results.length === 0) {
-      messages.push({ role: 'user', content: text, timestamp: 0 })
+    if (content.length > 0 || results.length === 0) {
+      messages.push({ role: 'user', content, timestamp: 0 })
     }
     for (const result of results) {
       messages.push({

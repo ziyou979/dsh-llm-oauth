@@ -189,7 +189,7 @@ node bin/login.mjs --list
 ## 限制
 
 - 模型列表跟随 `@earendil-works/pi-ai`；本插件不维护私有模型表
-- 无图片 / vision（请用官方 `dsh-llm-pi-ai`）
+- 图片输入仅限 pi-ai `input` 含 `image` 的模型；图片字节经宿主 `attachments` 服务读取（仅用户消息）
 - 无完整 native replay 签名
 - Web 端没有独立 OAuth 回调服务器（device code / 打开 URL）
 - 普通 OpenAI API、DeepSeek 官方仍走 API Key
