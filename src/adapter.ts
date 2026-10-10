@@ -12,7 +12,6 @@
 
 import {
   attributionHeaders,
-  contentHasImage,
   LlmAdapter,
   LlmError,
   ReasoningEffortId,
@@ -179,7 +178,10 @@ export class OAuthPiAiAdapter extends LlmAdapter {
       )
     }
 
-    const containsImage = options.messages.some(message => contentHasImage(message.content))
+    // Only non-offloaded image blocks need vision support and image bytes; offloaded
+    // ones render as an `[image omitted: ...]` text placeholder.
+    const containsImage = options.messages.some(message =>
+      message.content.some(block => block.type === 'image' && block.offloaded !== true))
     if (containsImage && !model.input.includes('image')) {
       throw new LlmError(`Model "${model.id}" does not support image input`, 'UNSUPPORTED_CONTENT')
     }
