@@ -12,6 +12,7 @@
 
 import {
   attributionHeaders,
+  contentHasImage,
   LlmAdapter,
   LlmError,
   ReasoningEffortId,
@@ -35,7 +36,8 @@ import type {
   Provider,
 } from '@earendil-works/pi-ai'
 import { resolveOAuthProviders } from './catalog.ts'
-import { toPiContext } from './context.ts'
+import { prepareRequestImages, toPiContext } from './context.ts'
+import type { ImageRequestReader } from './context.ts'
 import { toStreamChunks } from './stream.ts'
 import { getDeviceId } from '../bin/device-id.mjs'
 
@@ -46,6 +48,8 @@ export interface OAuthAdapterOptions {
   store: CredentialStore
   /** Full OAuth catalog this adapter can own (not necessarily registered). */
   catalog: readonly string[]
+  /** Host attachment service (`ctx.attachments`); required only for image requests. */
+  resolveAttachments?: () => ImageRequestReader | undefined
 }
 
 /** OAuth-backed multi-provider adapter. */
@@ -104,7 +108,7 @@ export class OAuthPiAiAdapter extends LlmAdapter {
         provider,
         id: model.id,
         name: model.name,
-        inputModalities: ['text'],
+        inputModalities: [...model.input],
       }))
     })
   }
@@ -124,7 +128,7 @@ export class OAuthPiAiAdapter extends LlmAdapter {
         provider,
         id: model,
         name: resolved.name,
-        inputModalities: ['text'],
+        inputModalities: [...resolved.input],
         context: { contextWindow: resolved.contextWindow },
         ...reasoning === undefined ? {} : { reasoning },
       }
@@ -175,7 +179,17 @@ export class OAuthPiAiAdapter extends LlmAdapter {
       )
     }
 
-    const context = toPiContext(options)
+    const containsImage = options.messages.some(message => contentHasImage(message.content))
+    if (containsImage && !model.input.includes('image')) {
+      throw new LlmError(`Model "${model.id}" does not support image input`, 'UNSUPPORTED_CONTENT')
+    }
+    const attachments = containsImage ? this.options.resolveAttachments?.() : undefined
+    if (containsImage && attachments === undefined) {
+      throw new LlmError('dsh-llm-oauth image input requires the host attachment service', 'UNSUPPORTED_CONTENT')
+    }
+    const images = attachments === undefined ? undefined
+      : await prepareRequestImages(options.messages, attachments, options.signal)
+    const context = toPiContext(options, images)
     const events = this.models.streamSimple(model, context, {
       maxRetries: 0,
       ...reasoning === undefined || reasoning === 'off' ? {} : { reasoning },

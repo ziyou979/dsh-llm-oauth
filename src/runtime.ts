@@ -14,6 +14,7 @@ import type {
 import type {} from '@deepseek-ai/dsh-settings'
 import { deepEqualJson } from '@deepseek-ai/dsh-util-values'
 import { OAuthPiAiAdapter } from './adapter.ts'
+import type { ImageRequestReader } from './context.ts'
 import { SETTINGS_NS, catalogDisplayName, resolveOAuthProviders } from './catalog.ts'
 import { handleOauthCommand } from './command.ts'
 import {
@@ -47,6 +48,8 @@ export function apply(ctx: Context, config: RuntimeConfig): void {
     authPath,
     store,
     catalog: entry.catalog,
+    // Optional host attachment service; only consulted when a request carries images.
+    resolveAttachments: () => ctx.get('attachments') as ImageRequestReader | undefined,
   })
 
   let registration: AdapterRegistrationHandle | undefined

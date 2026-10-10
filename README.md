@@ -183,7 +183,7 @@ node bin/login.mjs --list
 ## Limits
 
 - Model list follows `@earendil-works/pi-ai`; this plugin does not maintain a private model table
-- No image / vision path
+- Image input only for catalog models whose pi-ai `input` includes `image`; bytes come from the host `attachments` service (user messages only, default 2048×2048 px / 1 MiB request budget)
 - No full native replay signatures
 - No in-browser OAuth callback server (device code / open URL)
 - Plain OpenAI API and DeepSeek official stay on API keys
