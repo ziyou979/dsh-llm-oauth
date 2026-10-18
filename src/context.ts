@@ -50,10 +50,30 @@ const IMAGE_MAX_BYTES = 1_048_576
 
 function imageTarget(ref: ImageRef): { width: number, height: number, maxBytes: number } {
   const scale = Math.min(1, Math.sqrt(IMAGE_MAX_PIXELS / (ref.width * ref.height)))
-  return {
-    width: Math.max(1, Math.floor(ref.width * scale)),
-    height: Math.max(1, Math.floor(ref.height * scale)),
-    maxBytes: IMAGE_MAX_BYTES,
+  if (scale === 1) return { width: ref.width, height: ref.height, maxBytes: IMAGE_MAX_BYTES }
+  if (ref.width >= ref.height) {
+    let width = Math.max(1, Math.floor(ref.width * scale))
+    let height = Math.max(1, Math.round(width * ref.height / ref.width))
+    while (width * height > IMAGE_MAX_PIXELS && width > 1) {
+      width -= 1
+      height = Math.max(1, Math.round(width * ref.height / ref.width))
+    }
+    return { width, height, maxBytes: IMAGE_MAX_BYTES }
+  }
+  let height = Math.max(1, Math.floor(ref.height * scale))
+  let width = Math.max(1, Math.round(height * ref.width / ref.height))
+  while (width * height > IMAGE_MAX_PIXELS && height > 1) {
+    height -= 1
+    width = Math.max(1, Math.round(height * ref.width / ref.height))
+  }
+  return { width, height, maxBytes: IMAGE_MAX_BYTES }
+}
+
+function assertSupportedImageRoles(messages: readonly RequestMessage[]): void {
+  for (const message of messages) {
+    if ((message.role === 'assistant' || message.role === 'system') && contentHasImage(message.content)) {
+      throw new LlmError(`dsh-llm-oauth cannot send an image in a ${message.role} message`, 'UNSUPPORTED_CONTENT')
+    }
   }
 }
 
@@ -68,6 +88,7 @@ export async function prepareRequestImages(
   attachments: ImageRequestReader,
   signal?: AbortSignal,
 ): Promise<RequestImages> {
+  assertSupportedImageRoles(messages)
   const refs = new Map<string, ImageRef>()
   for (const message of messages) {
     for (const block of message.content) {
@@ -77,11 +98,11 @@ export async function prepareRequestImages(
       }
     }
   }
-  const images = new Map<string, RequestImage>()
-  for (const [id, ref] of refs) {
-    images.set(id, await attachments.readImageRequest(ref as never, imageTarget(ref), signal))
-  }
-  return images
+  const entries = [...refs.entries()]
+  const resolved = await Promise.all(
+    entries.map(([, ref]) => attachments.readImageRequest(ref as never, imageTarget(ref), signal)),
+  )
+  return new Map(entries.map(([id], index) => [id, resolved[index]!]))
 }
 
 function imageName(ref: ImageRef & { name?: string }): string {
@@ -89,7 +110,7 @@ function imageName(ref: ImageRef & { name?: string }): string {
 }
 
 /** User content: plain string when text-only, else text + image parts. */
-function userContent(message: Message, images: RequestImages | undefined): string | Array<TextContent | ImageContent> {
+function userContent(message: RequestMessage, images: RequestImages | undefined): string | Array<TextContent | ImageContent> {
   if (!contentHasImage(message.content)) return flattenText(message)
   const content: Array<TextContent | ImageContent> = []
   for (const block of message.content) {
@@ -97,18 +118,21 @@ function userContent(message: Message, images: RequestImages | undefined): strin
       if (block.text.length > 0) content.push({ type: 'text', text: block.text })
     } else if (block.type === 'image') {
       const ref = block.attachment as unknown as ImageRef & { name?: string }
-      const image = block.offloaded === true ? undefined : images?.get(String(ref.attachmentId))
-      if (image === undefined) {
+      if (block.offloaded === true) {
         content.push({ type: 'text', text: `[image omitted: ${imageName(ref)}]` })
-      } else {
-        content.push({ type: 'image', data: Buffer.from(image.data).toString('base64'), mimeType: image.mediaType })
+        continue
       }
+      const image = images?.get(String(ref.attachmentId))
+      if (image === undefined) {
+        throw new LlmError('dsh-llm-oauth image content requires prepared request images', 'UNSUPPORTED_CONTENT')
+      }
+      content.push({ type: 'image', data: Buffer.from(image.data).toString('base64'), mimeType: image.mediaType })
     }
   }
   return content
 }
 
-function flattenText(message: Message): string {
+function flattenText(message: RequestMessage): string {
   return message.content
     .filter(block => block.type === 'text')
     .map(block => block.text)
@@ -186,10 +210,8 @@ function toAssistant(message: Message): AssistantMessage {
  * @param images - request image bytes keyed by attachment id (required when images are present).
  */
 export function toPiContext(options: GenerateOptions, images?: RequestImages): PiContext {
+  assertSupportedImageRoles(options.messages)
   for (const message of options.messages) {
-    if ((message.role === 'assistant' || message.role === 'system') && contentHasImage(message.content)) {
-      throw new LlmError(`dsh-llm-oauth cannot send an image in a ${message.role} message`, 'UNSUPPORTED_CONTENT')
-    }
     if (images === undefined && message.content.some(b => b.type === 'image' && b.offloaded !== true)) {
       throw new LlmError('dsh-llm-oauth image content requires prepared request images', 'UNSUPPORTED_CONTENT')
     }

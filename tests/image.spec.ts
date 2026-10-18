@@ -62,6 +62,31 @@ describe('image input', () => {
 
   it('refuses images without prepared bytes', () => {
     expect(() => toPiContext({ provider: 'openai', model: 'gpt-5.5', messages: [user] })).toThrow(/prepared request images/)
+    expect(() => toPiContext({ provider: 'openai', model: 'gpt-5.5', messages: [user] }, new Map())).toThrow(/prepared request images/)
+  })
+
+  it('renders offloaded images as placeholder text without requiring vision or attachment bytes', async () => {
+    const offloadedUser = createMessage({
+      role: 'user',
+      source: { kind: 'user' },
+      content: [{ type: 'text', text: 'Earlier:' }, { type: 'image', attachment: ref as never, offloaded: true }],
+    } as never)
+    const context = toPiContext({ provider: 'openai', model: 'gpt-4', messages: [offloadedUser] })
+    expect(context.messages[0]!.content).toEqual([
+      { type: 'text', text: 'Earlier:' },
+      { type: 'text', text: '[image omitted: shot.png]' },
+    ])
+
+    const attachments = reader()
+    const textOnly = adapter('openai', attachments)
+    vi.spyOn(textOnly.modelsApi(), 'checkAuth').mockResolvedValue({ type: 'oauth' })
+    const events = createAssistantMessageEventStream()
+    events.end()
+    vi.spyOn(textOnly.modelsApi(), 'streamSimple').mockReturnValue(events)
+    await expect(async () => {
+      for await (const _ of textOnly.stream({ provider: 'openai', model: 'gpt-4', messages: [offloadedUser] })) {}
+    }).rejects.toThrow(/without done/)
+    expect(attachments.readImageRequest).not.toHaveBeenCalled()
   })
 
   it('serializes to an input_image part on the openai Responses route', async () => {
