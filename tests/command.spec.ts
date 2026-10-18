@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest'
-import { handleOauthCommand, listLoginWatches, resetLoginWatches, submitLoginCode } from '../src/command.ts'
+import { handleOauthCommand, listLoginWatches, resetLoginWatches, submitLoginCode, waitForLogin } from '../src/command.ts'
 import { OAuthController } from '../src/service.ts'
 import type { OAuthPiAiAdapter } from '../src/adapter.ts'
 
@@ -149,7 +149,8 @@ describe('/oauth login', () => {
     expect(result.openUrl).toBe('https://example.com/auth')
     expect(listLoginWatches()[0]?.prompt?.type).toBe('manual_code')
     expect(submitLoginCode('xai', '  http://localhost/callback?code=test  ')).toBe(true)
-    await vi.waitFor(() => expect(listLoginWatches()[0]?.status).toBe('ok'))
+    await waitForLogin('xai')
+    expect(listLoginWatches()[0]?.status).toBe('ok')
     expect(pasted).toBe('http://localhost/callback?code=test')
     expect(listLoginWatches()[0]?.prompt).toBeUndefined()
   })

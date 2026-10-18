@@ -7,7 +7,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { OAuthController } from './service.ts'
-import { handleOauthCommand } from './command.ts'
+import { handleOauthCommand, waitForLogin } from './command.ts'
 
 const API_PREFIX = '/dsh-llm-oauth'
 
@@ -102,12 +102,19 @@ export async function handleOauthHttp(
         return
       }
       controller.submitCode(provider, value)
+      await waitForLogin(provider)
+      const status = await controller.status()
+      const stillWaiting = status.providers.some(row => row.id === provider && row.loginStatus === 'waiting')
       sendJson(res, 200, {
-        ...await controller.status(),
-        command: {
-          kind: 'success',
-          text: `Submitted the value for ${provider}; the sign-in continues in the background.`,
-        },
+        ...status,
+        ...(stillWaiting
+          ? {
+            command: {
+              kind: 'success',
+              text: `Submitted the value for ${provider}; the sign-in continues in the background.`,
+            },
+          }
+          : {}),
       })
       return
     }

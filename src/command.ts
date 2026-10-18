@@ -94,6 +94,25 @@ export function submitLoginCode(provider: string, value: string): boolean {
   return true
 }
 
+/**
+ * Wait briefly for an in-flight login to settle after a manual code submission.
+ * @param provider - provider id whose login is running.
+ * @param timeoutMs - maximum wait before returning the current state.
+ */
+export async function waitForLogin(provider: string, timeoutMs = 5000): Promise<void> {
+  const finished = sessions.get(provider)?.finished
+  if (finished === undefined) return
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      finished,
+      new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs) }),
+    ])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
 /** Snapshot of background login watches (for tests and `/oauth status`). */
 export function listLoginWatches(): readonly LoginWatch[] {
   return [...watches.values()]

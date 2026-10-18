@@ -75,6 +75,39 @@ function Loaded({ t }: { t: (key: OauthSettingsKey) => string }): ReactNode {
     void load()
   }, [load])
 
+  const hasWaiting = status?.providers.some(row => row.loginStatus === 'waiting') ?? false
+
+  useEffect(() => {
+    if (!hasWaiting) return
+    let cancelled = false
+    const poll = async (): Promise<void> => {
+      try {
+        const next = await fetchOauthStatus()
+        if (cancelled) return
+        setStatus(next)
+        if (!next.providers.some(row => row.loginStatus === 'waiting')) {
+          setCommand(undefined)
+          setPopupBlocked(false)
+        }
+      } catch {
+        // Ignore transient poll errors while background login is running.
+      }
+    }
+    const timer = window.setInterval(() => { void poll() }, 1500)
+    const onFocus = (): void => { void poll() }
+    const onVisibility = (): void => {
+      if (document.visibilityState === 'visible') void poll()
+    }
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [hasWaiting])
+
   const applyLoginResult = (next: OAuthStatusSnapshot): void => {
     setStatus(next)
     const cmd = next.command
@@ -107,7 +140,9 @@ function Loaded({ t }: { t: (key: OauthSettingsKey) => string }): ReactNode {
         setStatus(next)
         setCommand(next.command)
         setError(next.command?.kind === 'error' ? next.command.text : undefined)
-        if (action !== 'code') setPopupBlocked(false)
+        if (action !== 'code' || !next.providers.some(row => row.loginStatus === 'waiting')) {
+          setPopupBlocked(false)
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
